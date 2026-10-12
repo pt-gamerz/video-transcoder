@@ -243,13 +243,31 @@ done < <(find "$OUTPUT_DIR" -type f -name '*.m3u8' -print0)
 
 # Let the Supabase callback independently verify the master, variant playlists,
 # and every referenced segment in B2 before marking the job completed.
+#
+# Retry completion delivery a bounded number of times. Do not set
+# COMPLETION_CALLBACK_ATTEMPTED until success: if every attempt fails, the EXIT
+# handler must still send one safe failure callback for this job.
 FAILURE_CODE="CALLBACK_DELIVERY_FAILED"
-COMPLETION_CALLBACK_ATTEMPTED=1
-if ! send_callback "completed" "" "${OUTPUT_PREFIX}/master.m3u8"; then
-  echo "::error::Completion callback did not return a successful response. Outputs were uploaded; inspect callback logs before retrying."
-  exit 1
+COMPLETION_MAX_ATTEMPTS=4
+completion_delivered=0
+for (( attempt=1; attempt<=COMPLETION_MAX_ATTEMPTS; attempt++ )); do
+  if send_callback "completed" "" "${OUTPUT_PREFIX}/master.m3u8"; then
+    completion_delivered=1
+    break
+  fi
+  if (( attempt < COMPLETION_MAX_ATTEMPTS )); then
+    sleep "$(( attempt * 5 ))"
+  fi
+done
+
+if (( completion_delivered == 0 )); then
+  # The EXIT handler will attempt one authenticated failure callback with only
+  # a fixed, safe error code and the generic message. Never claim job success.
+  FAILURE_CODE="CALLBACK_VERIFICATION_FAILED"
+  die "CALLBACK_VERIFICATION_FAILED"
 fi
 
+COMPLETION_CALLBACK_ATTEMPTED=1
 # Success. The original MP4 is intentionally preserved and the courses.video_url
 # field is intentionally not changed by this workflow.
 echo "HLS output uploaded and completion callback accepted."
