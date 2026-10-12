@@ -1,0 +1,109 @@
+name: Transcode lesson video to HLS
+
+on:
+  repository_dispatch:
+    types:
+      - transcode_lesson
+  workflow_dispatch:
+    inputs:
+      lesson_id:
+        description: Existing courses row UUID (course ID)
+        required: true
+        type: string
+      job_id:
+        description: Existing video_transcode_jobs row UUID
+        required: true
+        type: string
+      source_object_key:
+        description: Existing source object key under courses/videos/
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skillify-transcode-${{ github.event.client_payload.job_id || inputs.job_id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  transcode:
+    name: Build HLS renditions
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out trusted default-branch code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate request payload
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_LESSON_ID: ${{ github.event.client_payload.lesson_id }}
+          DISPATCH_JOB_ID: ${{ github.event.client_payload.job_id }}
+          DISPATCH_SOURCE_OBJECT_KEY: ${{ github.event.client_payload.source_object_key }}
+          MANUAL_LESSON_ID: ${{ inputs.lesson_id }}
+          MANUAL_JOB_ID: ${{ inputs.job_id }}
+          MANUAL_SOURCE_OBJECT_KEY: ${{ inputs.source_object_key }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            lesson_id="$DISPATCH_LESSON_ID"
+            job_id="$DISPATCH_JOB_ID"
+            source_key="$DISPATCH_SOURCE_OBJECT_KEY"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            lesson_id="$MANUAL_LESSON_ID"
+            job_id="$MANUAL_JOB_ID"
+            source_key="$MANUAL_SOURCE_OBJECT_KEY"
+          else
+            echo "::error::Unsupported workflow trigger."
+            exit 1
+          fi
+
+          uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          source_key_re='^courses/videos/[A-Za-z0-9_-]{1,128}/[A-Za-z0-9._-]{1,200}$'
+          [[ "$lesson_id" =~ $uuid_re ]] || { echo "::error::Invalid lesson ID."; exit 1; }
+          [[ "$job_id" =~ $uuid_re ]] || { echo "::error::Invalid job ID."; exit 1; }
+          [[ "$source_key" =~ $source_key_re ]] || { echo "::error::Invalid source object key."; exit 1; }
+          [[ "$source_key" != *".."* ]] || { echo "::error::Unsafe source object key."; exit 1; }
+          [[ "$source_key" != *$'\n'* && "$source_key" != *$'\r'* ]] || { echo "::error::Invalid source object key."; exit 1; }
+
+          printf 'lesson_id=%s\n' "$lesson_id" >> "$GITHUB_OUTPUT"
+          printf 'job_id=%s\n' "$job_id" >> "$GITHUB_OUTPUT"
+          printf 'source_object_key=%s\n' "$source_key" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure required tools are installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1 || \
+             ! command -v ffprobe >/dev/null 2>&1 || \
+             ! command -v aws >/dev/null 2>&1 || \
+             ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg awscli jq
+          fi
+          ffmpeg -version >/dev/null
+          aws --version >/dev/null
+          jq --version >/dev/null
+
+      - name: Download source, create HLS, upload, and notify Supabase
+        shell: bash
+        env:
+          LESSON_ID: ${{ steps.request.outputs.lesson_id }}
+          JOB_ID: ${{ steps.request.outputs.job_id }}
+          SOURCE_OBJECT_KEY: ${{ steps.request.outputs.source_object_key }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+          B2_SOURCE_KEY_ID: ${{ secrets.B2_SOURCE_KEY_ID }}
+          B2_SOURCE_APPLICATION_KEY: ${{ secrets.B2_SOURCE_APPLICATION_KEY }}
+          B2_HLS_KEY_ID: ${{ secrets.B2_HLS_KEY_ID }}
+          B2_HLS_APPLICATION_KEY: ${{ secrets.B2_HLS_APPLICATION_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          TRANSCODE_CALLBACK_SECRET: ${{ secrets.TRANSCODE_CALLBACK_SECRET }}
+        run: bash scripts/transcode.sh
