@@ -117,16 +117,29 @@ die() {
 
 for required in B2_BUCKET_NAME B2_ENDPOINT B2_SOURCE_KEY_ID B2_SOURCE_APPLICATION_KEY B2_HLS_KEY_ID B2_HLS_APPLICATION_KEY; do
   if [[ -z "${!required:-}" ]]; then
-    die "CONFIGURATION_ERROR"
+    die "CONFIGURATION_ERROR_MISSING_${required}"
   fi
 done
 
+# Trim accidental surrounding whitespace from copy/pasted bucket and endpoint values.
+B2_BUCKET_NAME="$(printf '%s' "$B2_BUCKET_NAME" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+B2_ENDPOINT="$(printf '%s' "$B2_ENDPOINT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
 if [[ ! "$B2_BUCKET_NAME" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
-  die "CONFIGURATION_ERROR"
+  die "B2_BUCKET_NAME_INVALID_FORMAT"
+fi
+
+# Backblaze sometimes displays the S3 endpoint as a hostname without a scheme.
+# Accept that form and use HTTPS; retain an explicitly supplied HTTPS endpoint.
+if [[ "$B2_ENDPOINT" != https://* ]]; then
+  if [[ "$B2_ENDPOINT" == http://* ]]; then
+    die "B2_ENDPOINT_MUST_USE_HTTPS"
+  fi
+  B2_ENDPOINT="https://${B2_ENDPOINT}"
 fi
 B2_ENDPOINT="${B2_ENDPOINT%/}"
 if [[ ! "$B2_ENDPOINT" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
-  die "CONFIGURATION_ERROR"
+  die "B2_ENDPOINT_INVALID_FORMAT"
 fi
 
 WORK_DIR="$(mktemp -d -t skillify-transcode.XXXXXX)" || die "WORKSPACE_FAILED"
