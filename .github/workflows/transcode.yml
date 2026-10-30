@@ -93,7 +93,6 @@ jobs:
           if [[ "$skip_callback" == "true" ]]; then
             echo "::notice::Standalone test mode: generated a temporary job UUID; no Supabase job row or callback is used."
           fi
-          printf 'source_object_key=%s\n' "$source_key" >> "$GITHUB_OUTPUT"
 
       - name: Validate repository secrets
         shell: bash
@@ -146,7 +145,7 @@ jobs:
           aws --version >/dev/null
           jq --version >/dev/null
 
-      - name: Download source, create HLS, upload, and notify Supabase
+      - name: Download source, create HLS, and upload output
         shell: bash
         env:
           LESSON_ID: ${{ steps.request.outputs.lesson_id }}
