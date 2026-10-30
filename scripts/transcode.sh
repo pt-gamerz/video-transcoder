@@ -20,6 +20,7 @@ B2_HLS_KEY_ID="${B2_HLS_KEY_ID:-}"
 B2_HLS_APPLICATION_KEY="${B2_HLS_APPLICATION_KEY:-}"
 SUPABASE_URL="${SUPABASE_URL:-}"
 TRANSCODE_CALLBACK_SECRET="${TRANSCODE_CALLBACK_SECRET:-}"
+SKIP_SUPABASE_CALLBACK="${SKIP_SUPABASE_CALLBACK:-false}"
 
 UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 SOURCE_KEY_RE='^courses/videos/[A-Za-z0-9_-]{1,128}/[A-Za-z0-9._-]{1,200}$'
@@ -33,14 +34,23 @@ if [[ ! "$SOURCE_OBJECT_KEY" =~ $SOURCE_KEY_RE || "$SOURCE_OBJECT_KEY" == *".."*
   echo "::error::Invalid source object key."
   exit 1
 fi
-if [[ ! "$SUPABASE_URL" =~ ^https://[A-Za-z0-9.-]+\.supabase\.co/?$ || -z "$TRANSCODE_CALLBACK_SECRET" ]]; then
-  echo "::error::Callback configuration is missing or invalid."
+if [[ "$SKIP_SUPABASE_CALLBACK" != "true" && "$SKIP_SUPABASE_CALLBACK" != "false" ]]; then
+  echo "::error::Invalid SKIP_SUPABASE_CALLBACK value."
   exit 1
 fi
-SUPABASE_URL="${SUPABASE_URL%/}"
-CALLBACK_URL="${SUPABASE_URL}/functions/v1/transcode-callback"
+if [[ "$SKIP_SUPABASE_CALLBACK" != "true" ]]; then
+  if [[ ! "$SUPABASE_URL" =~ ^https://[A-Za-z0-9.-]+\.supabase\.co/?$ || -z "$TRANSCODE_CALLBACK_SECRET" ]]; then
+    echo "::error::Callback configuration is missing or invalid."
+    exit 1
+  fi
+  SUPABASE_URL="${SUPABASE_URL%/}"
+  CALLBACK_URL="${SUPABASE_URL}/functions/v1/transcode-callback"
+else
+  echo "Standalone test mode: Supabase job callbacks are disabled."
+fi
 
 OUTPUT_PREFIX="courses/hls/${LESSON_ID}/${JOB_ID}"
+echo "HLS output prefix: ${OUTPUT_PREFIX}"
 WORK_DIR=""
 FAILURE_CODE="TRANSCODE_FAILED"
 COMPLETION_CALLBACK_ATTEMPTED=0
@@ -83,7 +93,9 @@ on_exit() {
   trap - EXIT
 
   if (( exit_code != 0 )) && (( COMPLETION_CALLBACK_ATTEMPTED == 0 )); then
-    if send_callback "failed" "$FAILURE_CODE" ""; then
+    if [[ "$SKIP_SUPABASE_CALLBACK" == "true" ]]; then
+      echo "::notice::Standalone test failed; no Supabase failure callback was attempted."
+    elif send_callback "failed" "$FAILURE_CODE" ""; then
       echo "Transcoding failure status reported to Supabase."
     else
       echo "::warning::Could not report the failed job to Supabase; check the callback function logs."
@@ -281,27 +293,33 @@ done < <(find "$OUTPUT_DIR" -type f -name '*.m3u8' -print0)
 # Retry completion delivery a bounded number of times. Do not set
 # COMPLETION_CALLBACK_ATTEMPTED until success: if every attempt fails, the EXIT
 # handler must still send one safe failure callback for this job.
-FAILURE_CODE="CALLBACK_DELIVERY_FAILED"
-COMPLETION_MAX_ATTEMPTS=4
-completion_delivered=0
-for (( attempt=1; attempt<=COMPLETION_MAX_ATTEMPTS; attempt++ )); do
-  if send_callback "completed" "" "${OUTPUT_PREFIX}/master.m3u8"; then
-    completion_delivered=1
-    break
-  fi
-  if (( attempt < COMPLETION_MAX_ATTEMPTS )); then
-    sleep "$(( attempt * 5 ))"
-  fi
-done
+if [[ "$SKIP_SUPABASE_CALLBACK" == "true" ]]; then
+  COMPLETION_CALLBACK_ATTEMPTED=1
+  echo "::notice::Standalone B2 + FFmpeg test completed. Supabase was not updated; the original MP4 remains unchanged."
+  echo "HLS output uploaded under: ${OUTPUT_PREFIX}/master.m3u8"
+else
+  FAILURE_CODE="CALLBACK_DELIVERY_FAILED"
+  COMPLETION_MAX_ATTEMPTS=4
+  completion_delivered=0
+  for (( attempt=1; attempt<=COMPLETION_MAX_ATTEMPTS; attempt++ )); do
+    if send_callback "completed" "" "${OUTPUT_PREFIX}/master.m3u8"; then
+      completion_delivered=1
+      break
+    fi
+    if (( attempt < COMPLETION_MAX_ATTEMPTS )); then
+      sleep "$(( attempt * 5 ))"
+    fi
+  done
 
-if (( completion_delivered == 0 )); then
-  # The EXIT handler will attempt one authenticated failure callback with only
-  # a fixed, safe error code and the generic message. Never claim job success.
-  FAILURE_CODE="CALLBACK_VERIFICATION_FAILED"
-  die "CALLBACK_VERIFICATION_FAILED"
+  if (( completion_delivered == 0 )); then
+    # The EXIT handler will attempt one authenticated failure callback with only
+    # a fixed, safe error code and the generic message. Never claim job success.
+    FAILURE_CODE="CALLBACK_VERIFICATION_FAILED"
+    die "CALLBACK_VERIFICATION_FAILED"
+  fi
+
+  COMPLETION_CALLBACK_ATTEMPTED=1
+  # Success. The original MP4 is intentionally preserved and the courses.video_url
+  # field is intentionally not changed by this workflow.
+  echo "HLS output uploaded and completion callback accepted."
 fi
-
-COMPLETION_CALLBACK_ATTEMPTED=1
-# Success. The original MP4 is intentionally preserved and the courses.video_url
-# field is intentionally not changed by this workflow.
-echo "HLS output uploaded and completion callback accepted."
