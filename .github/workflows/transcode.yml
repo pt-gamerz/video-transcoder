@@ -135,16 +135,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v ffmpeg >/dev/null 2>&1 || \
-             ! command -v ffprobe >/dev/null 2>&1 || \
-             ! command -v aws >/dev/null 2>&1 || \
-             ! command -v jq >/dev/null 2>&1; then
+
+          # Install only Debian packages that are available on the hosted Ubuntu runner.
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ffmpeg awscli jq
+            sudo apt-get install -y --no-install-recommends ffmpeg
           fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends jq
+          fi
+
+          # Ubuntu's apt repositories may not provide awscli. Install AWS CLI v2
+          # from Amazon's official distribution instead of relying on apt awscli.
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends curl unzip
+            install_dir="$(mktemp -d)"
+            trap 'rm -rf "$install_dir"' EXIT
+            curl --fail --silent --show-error --location \
+              https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+              --output "$install_dir/awscliv2.zip"
+            unzip -q "$install_dir/awscliv2.zip" -d "$install_dir"
+            sudo "$install_dir/aws/install" --update
+          fi
+
           ffmpeg -version >/dev/null
-          aws --version >/dev/null
-          jq --version >/dev/null
+          ffprobe -version >/dev/null
+          aws --version
+          jq --version
 
       - name: Download source, create HLS, and upload output
         shell: bash
