@@ -6,6 +6,8 @@ umask 077
 set +x
 export AWS_EC2_METADATA_DISABLED=true
 export AWS_DEFAULT_REGION=us-east-1
+export AWS_MAX_ATTEMPTS=5
+export AWS_RETRY_MODE=standard
 
 LESSON_ID="${LESSON_ID:-}"
 JOB_ID="${JOB_ID:-}"
@@ -120,11 +122,43 @@ INPUT_FILE="${WORK_DIR}/source.bin"
 OUTPUT_DIR="${WORK_DIR}/hls"
 mkdir -p "$OUTPUT_DIR"
 
+# Run B2's S3-compatible operations with bounded timeouts and safe diagnostics.
+# AWS CLI error text is useful for diagnosing B2 response codes, but never print
+# credentials, application keys, or callback secrets into Actions logs.
+b2_s3() {
+  local operation="$1"
+  shift
+  local stderr_file="${WORK_DIR}/aws-${operation}.stderr"
+  local status=0
+
+  if aws --cli-connect-timeout 30 --cli-read-timeout 300 s3 "$@" 2>"$stderr_file"; then
+    return 0
+  else
+    status=$?
+  fi
+
+  echo "::error::B2 S3 operation failed; operation=${operation}; aws_cli_exit=${status}"
+  if [[ -s "$stderr_file" ]]; then
+    python3 - "$stderr_file" <<'PY'
+import os
+import pathlib
+import sys
+
+error_text = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+for name, value in os.environ.items():
+    if value and any(marker in name.upper() for marker in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+        error_text = error_text.replace(value, "[REDACTED]")
+print(error_text[:1600].rstrip())
+PY
+  fi
+  return "$status"
+}
+
 # Download only the validated original object, using a read-only source key.
 FAILURE_CODE="B2_DOWNLOAD_FAILED"
 export AWS_ACCESS_KEY_ID="$B2_SOURCE_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$B2_SOURCE_APPLICATION_KEY"
-if ! aws s3 cp "s3://${B2_BUCKET_NAME}/${SOURCE_OBJECT_KEY}" "$INPUT_FILE" \
+if ! b2_s3 "download_source" cp "s3://${B2_BUCKET_NAME}/${SOURCE_OBJECT_KEY}" "$INPUT_FILE" \
   --endpoint-url "$B2_ENDPOINT" --region us-east-1 --only-show-errors --no-progress; then
   die "B2_DOWNLOAD_FAILED"
 fi
@@ -224,7 +258,7 @@ fi
 FAILURE_CODE="B2_UPLOAD_FAILED"
 export AWS_ACCESS_KEY_ID="$B2_HLS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$B2_HLS_APPLICATION_KEY"
-if ! aws s3 cp "$OUTPUT_DIR/" "s3://${B2_BUCKET_NAME}/${OUTPUT_PREFIX}/" \
+if ! b2_s3 "upload_segments" cp "$OUTPUT_DIR/" "s3://${B2_BUCKET_NAME}/${OUTPUT_PREFIX}/" \
   --recursive --exclude '*.m3u8' --content-type 'video/mp2t' \
   --cache-control 'public,max-age=31536000,immutable' \
   --endpoint-url "$B2_ENDPOINT" --region us-east-1 --only-show-errors --no-progress; then
@@ -233,7 +267,7 @@ fi
 
 while IFS= read -r -d '' playlist_file; do
   relative_path="${playlist_file#"${OUTPUT_DIR}/"}"
-  if ! aws s3 cp "$playlist_file" "s3://${B2_BUCKET_NAME}/${OUTPUT_PREFIX}/${relative_path}" \
+  if ! b2_s3 "upload_playlist" cp "$playlist_file" "s3://${B2_BUCKET_NAME}/${OUTPUT_PREFIX}/${relative_path}" \
     --content-type 'application/vnd.apple.mpegurl' \
     --cache-control 'public,max-age=60' \
     --endpoint-url "$B2_ENDPOINT" --region us-east-1 --only-show-errors --no-progress; then
