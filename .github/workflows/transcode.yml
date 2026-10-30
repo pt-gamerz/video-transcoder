@@ -77,6 +77,31 @@ jobs:
           printf 'job_id=%s\n' "$job_id" >> "$GITHUB_OUTPUT"
           printf 'source_object_key=%s\n' "$source_key" >> "$GITHUB_OUTPUT"
 
+      - name: Validate repository secrets
+        shell: bash
+        env:
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+          B2_SOURCE_KEY_ID: ${{ secrets.B2_SOURCE_KEY_ID }}
+          B2_SOURCE_APPLICATION_KEY: ${{ secrets.B2_SOURCE_APPLICATION_KEY }}
+          B2_HLS_KEY_ID: ${{ secrets.B2_HLS_KEY_ID }}
+          B2_HLS_APPLICATION_KEY: ${{ secrets.B2_HLS_APPLICATION_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          TRANSCODE_CALLBACK_SECRET: ${{ secrets.TRANSCODE_CALLBACK_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in B2_BUCKET_NAME B2_ENDPOINT B2_SOURCE_KEY_ID B2_SOURCE_APPLICATION_KEY B2_HLS_KEY_ID B2_HLS_APPLICATION_KEY SUPABASE_URL TRANSCODE_CALLBACK_SECRET; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required Actions secret: ${name}"
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            exit 1
+          fi
+          echo "All required repository secrets are available."
+
       - name: Ensure required tools are installed
         shell: bash
         run: |
