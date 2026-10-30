@@ -41,7 +41,7 @@ Configure these in **Settings → Secrets and variables → Actions → Reposito
 | Secret name | Purpose |
 |---|---|
 | `B2_BUCKET_NAME` | B2 bucket containing original and HLS objects |
-| `B2_ENDPOINT` | S3-compatible endpoint for the B2 bucket's region |
+| `B2_ENDPOINT` | S3-compatible endpoint for the B2 bucket's region. A hostname such as `s3.<region>.backblazeb2.com` is accepted; the worker adds `https://` automatically. |
 | `B2_SOURCE_KEY_ID` | B2 application-key ID used to read original videos |
 | `B2_SOURCE_APPLICATION_KEY` | B2 application key used to read original videos |
 | `B2_HLS_KEY_ID` | B2 application-key ID used to write HLS output |
