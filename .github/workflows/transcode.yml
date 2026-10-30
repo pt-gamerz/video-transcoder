@@ -37,11 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Check out trusted default-branch code
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
+      - name: Fetch trusted default-branch code without external Actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch main https://github.com/pt-gamerz/video-transcoder.git "$RUNNER_TEMP/video-transcoder"
+          cp -a "$RUNNER_TEMP/video-transcoder/." "$GITHUB_WORKSPACE/"
 
       - name: Validate request payload
         id: request
