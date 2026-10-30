@@ -11,9 +11,14 @@ on:
         required: true
         type: string
       job_id:
-        description: Existing video_transcode_jobs row UUID
-        required: true
+        description: Existing video_transcode_jobs row UUID (leave blank for standalone test mode)
+        required: false
         type: string
+      standalone_test:
+        description: Test B2 download + FFmpeg + HLS upload without a database job or Supabase callback
+        required: true
+        type: boolean
+        default: true
       source_object_key:
         description: Existing source object key under courses/videos/
         required: true
@@ -48,10 +53,12 @@ jobs:
           DISPATCH_SOURCE_OBJECT_KEY: ${{ github.event.client_payload.source_object_key }}
           MANUAL_LESSON_ID: ${{ inputs.lesson_id }}
           MANUAL_JOB_ID: ${{ inputs.job_id }}
+          MANUAL_STANDALONE_TEST: ${{ inputs.standalone_test }}
           MANUAL_SOURCE_OBJECT_KEY: ${{ inputs.source_object_key }}
         run: |
           set -euo pipefail
 
+          skip_callback=false
           if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
             lesson_id="$DISPATCH_LESSON_ID"
             job_id="$DISPATCH_JOB_ID"
@@ -60,6 +67,12 @@ jobs:
             lesson_id="$MANUAL_LESSON_ID"
             job_id="$MANUAL_JOB_ID"
             source_key="$MANUAL_SOURCE_OBJECT_KEY"
+            if [[ "$MANUAL_STANDALONE_TEST" == "true" ]]; then
+              skip_callback=true
+              if [[ -z "$job_id" ]]; then
+                job_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+              fi
+            fi
           else
             echo "::error::Unsupported workflow trigger."
             exit 1
@@ -76,6 +89,11 @@ jobs:
           printf 'lesson_id=%s\n' "$lesson_id" >> "$GITHUB_OUTPUT"
           printf 'job_id=%s\n' "$job_id" >> "$GITHUB_OUTPUT"
           printf 'source_object_key=%s\n' "$source_key" >> "$GITHUB_OUTPUT"
+          printf 'skip_callback=%s\n' "$skip_callback" >> "$GITHUB_OUTPUT"
+          if [[ "$skip_callback" == "true" ]]; then
+            echo "::notice::Standalone test mode: generated a temporary job UUID; no Supabase job row or callback is used."
+          fi
+          printf 'source_object_key=%s\n' "$source_key" >> "$GITHUB_OUTPUT"
 
       - name: Validate repository secrets
         shell: bash
@@ -88,19 +106,30 @@ jobs:
           B2_HLS_APPLICATION_KEY: ${{ secrets.B2_HLS_APPLICATION_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           TRANSCODE_CALLBACK_SECRET: ${{ secrets.TRANSCODE_CALLBACK_SECRET }}
+          SKIP_SUPABASE_CALLBACK: ${{ steps.request.outputs.skip_callback }}
         run: |
           set -euo pipefail
           missing=()
-          for name in B2_BUCKET_NAME B2_ENDPOINT B2_SOURCE_KEY_ID B2_SOURCE_APPLICATION_KEY B2_HLS_KEY_ID B2_HLS_APPLICATION_KEY SUPABASE_URL TRANSCODE_CALLBACK_SECRET; do
+          for name in B2_BUCKET_NAME B2_ENDPOINT B2_SOURCE_KEY_ID B2_SOURCE_APPLICATION_KEY B2_HLS_KEY_ID B2_HLS_APPLICATION_KEY; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::Missing required Actions secret: ${name}"
               missing+=("$name")
             fi
           done
+          if [[ "$SKIP_SUPABASE_CALLBACK" != "true" ]]; then
+            for name in SUPABASE_URL TRANSCODE_CALLBACK_SECRET; do
+              if [[ -z "${!name:-}" ]]; then
+                echo "::error::Missing required Actions secret: ${name}"
+                missing+=("$name")
+              fi
+            done
+          else
+            echo "Standalone test mode: Supabase callback secrets are not required."
+          fi
           if (( ${#missing[@]} > 0 )); then
             exit 1
           fi
-          echo "All required repository secrets are available."
+          echo "All secrets required for this run are available."
 
       - name: Ensure required tools are installed
         shell: bash
@@ -131,4 +160,5 @@ jobs:
           B2_HLS_APPLICATION_KEY: ${{ secrets.B2_HLS_APPLICATION_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           TRANSCODE_CALLBACK_SECRET: ${{ secrets.TRANSCODE_CALLBACK_SECRET }}
+          SKIP_SUPABASE_CALLBACK: ${{ steps.request.outputs.skip_callback }}
         run: bash scripts/transcode.sh
