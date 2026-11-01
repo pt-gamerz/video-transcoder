@@ -129,18 +129,34 @@ if [[ ! "$B2_BUCKET_NAME" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
   die "B2_BUCKET_NAME_INVALID_FORMAT"
 fi
 
-# Backblaze sometimes displays the S3 endpoint as a hostname without a scheme.
-# Accept that form and use HTTPS; retain an explicitly supplied HTTPS endpoint.
-if [[ "$B2_ENDPOINT" != https://* ]]; then
-  if [[ "$B2_ENDPOINT" == http://* ]]; then
-    die "B2_ENDPOINT_MUST_USE_HTTPS"
-  fi
-  B2_ENDPOINT="https://${B2_ENDPOINT}"
+# Backblaze's bucket console may show the regional endpoint together with
+# the bucket path (for example, s3.<region>.backblazeb2.com/<bucket>).
+# AWS CLI's --endpoint-url must contain only the regional endpoint; the bucket
+# is already supplied separately in each s3://<bucket>/<object> argument.
+B2_ENDPOINT_VALUE="$B2_ENDPOINT"
+if [[ "$B2_ENDPOINT_VALUE" == http://* ]]; then
+  die "B2_ENDPOINT_MUST_USE_HTTPS"
 fi
-B2_ENDPOINT="${B2_ENDPOINT%/}"
-if [[ ! "$B2_ENDPOINT" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+if [[ "$B2_ENDPOINT_VALUE" == https://* ]]; then
+  B2_ENDPOINT_VALUE="${B2_ENDPOINT_VALUE#https://}"
+fi
+B2_ENDPOINT_VALUE="${B2_ENDPOINT_VALUE%/}"
+
+# Safely remove the bucket path only when it exactly matches B2_BUCKET_NAME.
+if [[ "$B2_ENDPOINT_VALUE" == *"/"* ]]; then
+  expected_bucket_suffix="/${B2_BUCKET_NAME}"
+  if [[ "$B2_ENDPOINT_VALUE" == *"$expected_bucket_suffix" ]]; then
+    B2_ENDPOINT_VALUE="${B2_ENDPOINT_VALUE%"$expected_bucket_suffix"}"
+  else
+    die "B2_ENDPOINT_PATH_MUST_MATCH_BUCKET"
+  fi
+fi
+
+if [[ ! "$B2_ENDPOINT_VALUE" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
   die "B2_ENDPOINT_INVALID_FORMAT"
 fi
+B2_ENDPOINT="https://${B2_ENDPOINT_VALUE}"
+echo "Using Backblaze S3 endpoint host: ${B2_ENDPOINT_VALUE}"
 
 WORK_DIR="$(mktemp -d -t skillify-transcode.XXXXXX)" || die "WORKSPACE_FAILED"
 INPUT_FILE="${WORK_DIR}/source.bin"
